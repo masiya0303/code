@@ -240,8 +240,6 @@ class MainActivity : ComponentActivity() {
             // Ads removed: the app no longer initializes AdMob or renders native/interstitial ads.
             val adHost = AdHost.None
 
-            }
-
             // A `.caproj` package handed in via "Open with" opens the import preview (see the branch below); any
             // other inbound file is copied into the open project's first source root as before.
             var importPackagePath by remember { mutableStateOf<String?>(null) }
