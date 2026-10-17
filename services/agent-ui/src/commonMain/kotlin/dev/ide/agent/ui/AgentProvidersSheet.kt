@@ -80,7 +80,6 @@ internal fun AgentProvidersSheet(backend: IdeBackend, onClose: () -> Unit) {
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp)
                 .clip(RoundedCornerShape(Ca.radius.xl))
-                // Opaque: a key field is the last thing that should be legible-depending-on-what-is-behind-it.
                 .background(MaterialTheme.colorScheme.surfaceContainerHigh)
                 .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(Ca.radius.xl))
                 .padding(18.dp),
@@ -102,20 +101,29 @@ internal fun AgentProvidersSheet(backend: IdeBackend, onClose: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 cfg.providers.forEach { provider ->
+                    val isGateway = provider.id.startsWith("gateway.")
                     ProviderCard(
                         provider = provider,
                         selected = provider.id == cfg.selectedProvider,
-                        gatewayBaseUrl = cfg.gatewayBaseUrl,
-                        gatewayModel = cfg.gatewayModel,
-                        gatewayCaCert = cfg.gatewayCaCert,
+                        isGateway = isGateway,
                         onSelect = { backend.agent.selectProvider(provider.id); cfg = backend.agent.config() },
                         onSetKey = { backend.agent.setProviderKey(provider.id, it) },
                         onSetBackupKeys = { backend.agent.setProviderBackupKeys(provider.id, it) },
-                        onSetGateway = { url, model, ca -> backend.agent.setGateway(url, model, ca) },
+                        onSetGateway = { url, model, ca -> backend.agent.setGatewayConfig(provider.id, url, model, ca) },
+                        onFetchModels = { backend.agent.refreshGatewayModels(provider.id); cfg = backend.agent.config() },
+                        onDelete = { backend.agent.deleteGateway(provider.id); cfg = backend.agent.config() },
                     )
                 }
+                // Add a new custom gateway (always available)
+                Text(
+                    "Add gateway",
+                    color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.clip(RoundedCornerShape(Ca.radius.pill))
+                        .clickable { val newId = backend.agent.addGateway(); backend.agent.selectProvider(newId); cfg = backend.agent.config() }
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                )
             }
-            PrimaryButton(stringResource(Res.string.chat_done), onClose, Modifier.fillMaxWidth())
+            PrimaryButton(stringResource(Res.string.chat_done), { cfg = backend.agent.config(); onClose() }, Modifier.fillMaxWidth())
         }
     }
 }
@@ -124,26 +132,22 @@ internal fun AgentProvidersSheet(backend: IdeBackend, onClose: () -> Unit) {
 private fun ProviderCard(
     provider: UiAgentProvider,
     selected: Boolean,
-    gatewayBaseUrl: String,
-    gatewayModel: String,
-    gatewayCaCert: String,
+    isGateway: Boolean,
     onSelect: () -> Unit,
     onSetKey: (String) -> Unit,
     onSetBackupKeys: (List<String>) -> Unit,
     onSetGateway: (String, String, String) -> Unit,
+    onFetchModels: () -> Unit,
+    onDelete: () -> Unit,
 ) {
-    val isGateway = provider.id == "gateway"
     var key by remember(provider.id) { mutableStateOf(provider.apiKey) }
     var backups by remember(provider.id) { mutableStateOf(provider.backupKeys) }
-    var baseUrl by remember(provider.id) { mutableStateOf(oneLine(gatewayBaseUrl)) }
-    var model by remember(provider.id) { mutableStateOf(gatewayModel) }
-    var caCert by remember(provider.id) { mutableStateOf(gatewayCaCert) }
-    // A gateway is often a local server that takes no key, so its URL alone makes it usable.
+    var baseUrl by remember(provider.id) { mutableStateOf(oneLine(provider.gatewayBaseUrl)) }
+    var model by remember(provider.id) { mutableStateOf(provider.gatewayModel) }
+    var caCert by remember(provider.id) { mutableStateOf(provider.gatewayCaCert) }
     val hasKey = if (isGateway) baseUrl.isNotBlank() else key.isNotBlank() || backups.any { it.isNotBlank() }
     val shape = RoundedCornerShape(Ca.radius.md)
     val scheme = MaterialTheme.colorScheme
-    // A selected card is a tonal container, so its text and its radio dot take the container's own content
-    // colour. Leaving them on onSurface is the classic pairing slip: legible in one theme, muddy in the other.
     val container = if (selected) scheme.secondaryContainer else scheme.surfaceContainerHigh
     val onContainer = if (selected) scheme.onSecondaryContainer else scheme.onSurface
     Column(
@@ -163,26 +167,45 @@ private fun ProviderCard(
                 maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
             )
             if (hasKey) {
-                // A solid tonal pair rather than a tinted wash of the status green: Material has no success
-                // container, and tertiary is the role that reads as a positive state at full opacity.
                 Chip(
                     stringResource(Res.string.chat_connected),
                     fill = scheme.tertiaryContainer,
                     textColor = scheme.onTertiaryContainer,
                 )
             }
+            if (isGateway && selected) {
+                // Delete button for gateway providers
+                IconButtonCa(CaIcons.close, "Delete gateway", onDelete, iconSize = 14, boxSize = 28)
+            }
         }
         if (selected) {
             SecretField(key, stringResource(if (isGateway) Res.string.chat_api_key_optional else Res.string.chat_api_key)) { key = it; onSetKey(it) }
             BackupKeys(backups) { backups = it; onSetBackupKeys(it) }
             if (isGateway) {
-                // A single-line field shows only the first line of a multi-line paste, so a pasted "URL + key" block
-                // looked like a clean URL while the rest still went into requests. Flatten it so all of it is visible.
                 PlainField(baseUrl, stringResource(Res.string.chat_base_url)) { baseUrl = oneLine(it); onSetGateway(baseUrl, model, caCert) }
                 PlainField(model, stringResource(Res.string.chat_model)) { model = it; onSetGateway(baseUrl, it, caCert) }
                 PlainField(caCert, stringResource(Res.string.chat_ca_cert)) { caCert = it; onSetGateway(baseUrl, model, it) }
                 Text(stringResource(Res.string.chat_ca_cert_hint), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
                 Text(stringResource(Res.string.chat_gateway_hint), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+                // Fetch models button
+                Text(
+                    "Fetch models from endpoint",
+                    color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.clip(RoundedCornerShape(Ca.radius.pill))
+                        .clickable { onFetchModels() }
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                )
+                // Show fetched models
+                if (provider.models.isNotEmpty()) {
+                    provider.models.forEach { m ->
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(m.displayName.ifBlank { m.id }, color = scheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+                            if (m.id == provider.gatewayModel) {
+                                Text("*", color = scheme.primary, style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+                }
             }
         }
     }
