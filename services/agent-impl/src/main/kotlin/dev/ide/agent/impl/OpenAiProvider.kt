@@ -20,6 +20,7 @@ import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.JsonObject
 
 /**
  * The OpenAI provider. The official endpoint is driven through the Responses API ([OpenAiResponses]); a
@@ -63,13 +64,18 @@ class OpenAiProvider(
                 streamResponses(sse)
             } else {
                 // Compatible gateways implement Chat Completions, not the Responses API.
+                // SenseNova's gateway does not stream tool_calls fragments; when tools are present it
+                // silently truncates after reasoning. Fall back to a non-streaming request and decode
+                // the whole message block at once.
+                val useNonStream = request.tools.isNotEmpty() &&
+                    request.model.contains("sensenova", ignoreCase = true)
                 val sse = SseRequest(
                     url = "$base/v1/chat/completions",
                     headers = headers,
-                    jsonBody = buildBody(request),
+                    jsonBody = buildBody(request, stream = !useNonStream),
                     caCertificatePem = config.caCertificatePem,
                 )
-                stream(sse)
+                if (useNonStream) nonStream(sse) else stream(sse)
             }
         }
     }
@@ -93,15 +99,76 @@ class OpenAiProvider(
         if (!decoder.completed) decoder.finish().forEach { emit(it) }
     }.catch { e -> emit(LlmStreamEvent.Failed(e.message ?: "OpenAI stream error", e)) }
 
+    /** Non-streaming Chat Completions: POSTs and decodes the single response JSON. Used for SenseNova
+     *  tool-calling, which the gateway does not support over SSE. */
+    private fun nonStream(sse: SseRequest): Flow<LlmStreamEvent> = flow {
+        val body = transport.post(sse.url, sse.headers, sse.jsonBody, sse.caCertificatePem)
+        val json = AgentJson.parseToJsonElement(body).asObj() ?: throw LlmHttpException(500, body)
+        decodeNonStream(json).forEach { emit(it) }
+    }.catch { e -> emit(LlmStreamEvent.Failed(e.message ?: "OpenAI non-stream error", e)) }
+
+    /** Decodes a non-streaming Chat Completions response (single `message`, no `delta` fragments). */
+    private fun decodeNonStream(json: JsonObject): List<LlmStreamEvent> {
+        val out = ArrayList<LlmStreamEvent>()
+        var stopReason = StopReason.END_TURN
+        var inputTokens = 0
+        var outputTokens = 0
+        var cacheReadTokens = 0
+
+        json["usage"].asObj()?.let { usage ->
+            usage["prompt_tokens"].asInt()?.let { inputTokens = it }
+            usage["completion_tokens"].asInt()?.let { outputTokens = it }
+            usage["prompt_tokens_details"].asObj()?.get("cached_tokens").asInt()?.let { cacheReadTokens = it }
+        }
+
+        val choice = json["choices"].asArr()?.firstOrNull().asObj() ?: return out
+        choice["finish_reason"].asStr()?.let { stopReason = mapStop(it) }
+        val message = choice["message"].asObj() ?: return out
+
+        message["reasoning"].asStr()?.takeIf { it.isNotEmpty() }?.let {
+            out += LlmStreamEvent.ThinkingDelta(it)
+            out += LlmStreamEvent.ThinkingCompleted(it, null)
+        }
+        message["content"].asStr()?.takeIf { it.isNotEmpty() }?.let {
+            out += LlmStreamEvent.TextDelta(it)
+        }
+        message["tool_calls"].asArr()?.forEach { tcElement ->
+            val tc = tcElement.asObj() ?: return@forEach
+            val id = tc["id"].asStr() ?: ""
+            val fn = tc["function"].asObj()
+            val name = fn?.get("name").asStr() ?: ""
+            val args = fn?.get("arguments").asStr() ?: "{}"
+            if (id.isNotEmpty()) {
+                out += LlmStreamEvent.ToolCallStarted(id, name)
+                out += LlmStreamEvent.ToolCallArgsDelta(id, args)
+                out += LlmStreamEvent.ToolCallCompleted(id, name, args)
+            }
+        }
+
+        out += LlmStreamEvent.Usage(
+            TokenUsage((inputTokens - cacheReadTokens).coerceAtLeast(0), outputTokens, cacheReadTokens),
+        )
+        out += LlmStreamEvent.Completed(stopReason)
+        return out
+    }
+
+    private fun mapStop(s: String): StopReason = when (s) {
+        "stop" -> StopReason.END_TURN
+        "length" -> StopReason.MAX_TOKENS
+        "tool_calls", "function_call" -> StopReason.TOOL_USE
+        "content_filter" -> StopReason.REFUSAL
+        else -> StopReason.END_TURN
+    }
+
     private fun streamResponses(sse: SseRequest): Flow<LlmStreamEvent> = flow {
         val decoder = OpenAiResponsesDecoder()
         transport.sse(sse).collect { data -> decoder.decode(data).forEach { emit(it) } }
         if (!decoder.completed) decoder.finish(null, null).forEach { emit(it) }
     }.catch { e -> emit(LlmStreamEvent.Failed(e.message ?: "OpenAI stream error", e)) }
 
-    private fun buildBody(request: LlmRequest): String = buildJsonObject {
+    private fun buildBody(request: LlmRequest, stream: Boolean = true): String = buildJsonObject {
         put("model", request.model)
-        put("stream", true)
+        put("stream", stream)
         put("max_tokens", request.maxTokens)
         // A reasoning model applies a default reasoning effort even when none is sent; on chat completions
         // that default plus function tools is rejected, so forwarding "none" is how a tool-using agent runs
@@ -364,11 +431,4 @@ internal class OpenAiStreamDecoder {
         return out
     }
 
-    private fun mapStop(s: String): StopReason = when (s) {
-        "stop" -> StopReason.END_TURN
-        "length" -> StopReason.MAX_TOKENS
-        "tool_calls", "function_call" -> StopReason.TOOL_USE
-        "content_filter" -> StopReason.REFUSAL
-        else -> StopReason.END_TURN
-    }
 }
