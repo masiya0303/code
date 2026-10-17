@@ -867,6 +867,12 @@ data class UiAgentProvider(
     val apiKey: String = "",
     /** Further keys, tried in order when [apiKey] (or the key before) hits a limit or is rejected. */
     val backupKeys: List<String> = emptyList(),
+    /** The base URL for a custom gateway (non-empty only for gateway providers). */
+    val gatewayBaseUrl: String = "",
+    /** The model name configured for a custom gateway. */
+    val gatewayModel: String = "",
+    /** An optional CA certificate (PEM) for a custom gateway behind a private CA. */
+    val gatewayCaCert: String = "",
 )
 
 /** Provider/model selection and permission mode, for the chat drawer header, key manager, and settings. */
