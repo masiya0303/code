@@ -31,11 +31,20 @@ import dev.ide.agent.mcp.CodeAssistMcpServer
 import dev.ide.agent.mcp.FtpServer
 import dev.ide.agent.mcp.HttpMcpServer
 import dev.ide.agent.toolSchema
-import com.google.gson.Gson
-import com.google.gson.reflect.TypeToken
 import dev.ide.core.BackendContext
 import dev.ide.core.IdeServices
 import dev.ide.platform.log.Log
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.addJsonObject
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import dev.ide.ui.backend.AgentService
 import dev.ide.ui.backend.UiAgentAttachment
 import dev.ide.ui.backend.UiAgentAttachmentKind
@@ -282,7 +291,22 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
         val json = pref("gatewayConfigs")
         if (json != null) {
             return runCatching {
-                com.google.gson.Gson().fromJson(json, object : TypeToken<List<GatewayConfig>>() {})
+                Json.parseToJsonElement(json).jsonArray.mapNotNull { el ->
+                    val o = el as? JsonObject ?: return@mapNotNull null
+                    val models = (o["models"] as? JsonArray)?.mapNotNull { m ->
+                        val mo = m as? JsonObject ?: return@mapNotNull null
+                        val id = mo["id"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                        if (id.isEmpty()) null else UiAgentModel(id, mo["displayName"]?.jsonPrimitive?.contentOrNull ?: id)
+                    } ?: emptyList()
+                    GatewayConfig(
+                        name = o["name"]?.jsonPrimitive?.contentOrNull ?: "Custom gateway",
+                        baseUrl = o["baseUrl"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                        model = o["model"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                        caCert = o["caCert"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                        key = o["key"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                        models = models,
+                    )
+                }
             }.getOrDefault(emptyList())
         }
         val legacyUrl = pref("gatewayBaseUrl")
@@ -301,8 +325,26 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
 
     /** Persist all gateway configs as a JSON array. */
     private fun saveGatewayConfigs(configs: List<GatewayConfig>) {
-        val json = com.google.gson.Gson().toJson(configs)
-        ctx.manager?.setPreference("settings.$AI_PAGE.gatewayConfigs", json)
+        val arr = buildJsonArray {
+            configs.forEach { gw ->
+                addJsonObject {
+                    put("name", gw.name)
+                    put("baseUrl", gw.baseUrl)
+                    put("model", gw.model)
+                    put("caCert", gw.caCert)
+                    put("key", gw.key)
+                    putJsonArray("models") {
+                        gw.models.forEach { m ->
+                            addJsonObject {
+                                put("id", m.id)
+                                put("displayName", m.displayName)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        ctx.manager?.setPreference("settings.$AI_PAGE.gatewayConfigs", arr.toString())
     }
 
     private fun resolveConfig(): ResolvedConfig {
