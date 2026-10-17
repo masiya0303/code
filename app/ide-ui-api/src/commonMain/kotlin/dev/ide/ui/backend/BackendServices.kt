@@ -1795,6 +1795,18 @@ interface AgentService {
      *  certificate PEM to trust for an endpoint behind a private/regional CA — blank = system trust only). */
     fun setGateway(baseUrl: String, model: String, caCert: String)
 
+    /** Configure a specific custom gateway by its id (base URL + model name + CA cert). */
+    fun setGatewayConfig(gatewayId: String, baseUrl: String, model: String, caCert: String) {}
+
+    /** Add a new custom gateway. Returns the new gateway's id. */
+    fun addGateway(): String = ""
+
+    /** Delete a custom gateway by its id. */
+    fun deleteGateway(gatewayId: String) {}
+
+    /** Fetch the model list for a specific custom gateway by its id. */
+    fun refreshGatewayModels(gatewayId: String) {}
+
     /** Send a user message; streams the agent's response into [chatState]. Queued
      *  [UiAgentChatState.pendingAttachments] go with it. */
     fun send(text: String)
