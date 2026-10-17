@@ -103,7 +103,7 @@ class OpenAiProvider(
      *  tool-calling, which the gateway does not support over SSE. */
     private fun nonStream(sse: SseRequest): Flow<LlmStreamEvent> = flow {
         val body = transport.post(sse.url, sse.headers, sse.jsonBody, sse.caCertificatePem)
-        val json = AgentJson.parseToJsonElement(body).asObj() ?: throw LlmHttpException(500, body)
+        val json = AgentJson.parseToJsonElement(body).asObj() ?: throw LlmHttpException(body, 500)
         decodeNonStream(json).forEach { emit(it) }
     }.catch { e -> emit(LlmStreamEvent.Failed(e.message ?: "OpenAI non-stream error", e)) }
 
@@ -118,10 +118,10 @@ class OpenAiProvider(
         json["usage"].asObj()?.let { usage ->
             usage["prompt_tokens"].asInt()?.let { inputTokens = it }
             usage["completion_tokens"].asInt()?.let { outputTokens = it }
-            usage["prompt_tokens_details"].asObj()?.get("cached_tokens").asInt()?.let { cacheReadTokens = it }
+            (usage["prompt_tokens_details"].asObj()?.get("cached_tokens"))?.asInt()?.let { cacheReadTokens = it }
         }
 
-        val choice = json["choices"].asArr()?.firstOrNull().asObj() ?: return out
+        val choice = json["choices"].asArr()?.firstOrNull()?.let { it.asObj() } ?: return out
         choice["finish_reason"].asStr()?.let { stopReason = mapStop(it) }
         val message = choice["message"].asObj() ?: return out
 
@@ -136,8 +136,8 @@ class OpenAiProvider(
             val tc = tcElement.asObj() ?: return@forEach
             val id = tc["id"].asStr() ?: ""
             val fn = tc["function"].asObj()
-            val name = fn?.get("name").asStr() ?: ""
-            val args = fn?.get("arguments").asStr() ?: "{}"
+            val name = (fn?.get("name"))?.asStr() ?: ""
+            val args = (fn?.get("arguments"))?.asStr() ?: "{}"
             if (id.isNotEmpty()) {
                 out += LlmStreamEvent.ToolCallStarted(id, name)
                 out += LlmStreamEvent.ToolCallArgsDelta(id, args)
@@ -376,10 +376,10 @@ internal class OpenAiStreamDecoder {
             usage["completion_tokens"].asInt()?.let { outputTokens = it }
             // This dialect counts cached tokens INSIDE prompt_tokens; the neutral model keeps the uncached
             // remainder in inputTokens, so subtract the cached share rather than double-counting it.
-            usage["prompt_tokens_details"].asObj()?.get("cached_tokens").asInt()?.let { cacheReadTokens = it }
+            (usage["prompt_tokens_details"].asObj()?.get("cached_tokens"))?.asInt()?.let { cacheReadTokens = it }
         }
 
-        val choice = json["choices"].asArr()?.firstOrNull().asObj() ?: return out
+        val choice = json["choices"].asArr()?.firstOrNull()?.let { it.asObj() } ?: return out
         choice["finish_reason"].asStr()?.let { stopReason = mapStop(it) }
 
         val delta = choice["delta"].asObj() ?: return out
@@ -431,4 +431,11 @@ internal class OpenAiStreamDecoder {
         return out
     }
 
+    private fun mapStop(s: String): StopReason = when (s) {
+        "stop" -> StopReason.END_TURN
+        "length" -> StopReason.MAX_TOKENS
+        "tool_calls", "function_call" -> StopReason.TOOL_USE
+        "content_filter" -> StopReason.REFUSAL
+        else -> StopReason.END_TURN
+    }
 }
