@@ -106,7 +106,7 @@ class OpenAiProvider(
         // A reasoning model applies a default reasoning effort even when none is sent; on chat completions
         // that default plus function tools is rejected, so forwarding "none" is how a tool-using agent runs
         // against such a model. Non-reasoning models ignore the field. Sent only when explicitly requested.
-        reasoningEffort(request.effort)?.let { put("reasoning_effort", it) }
+        reasoningEffort(request.effort, request.model)?.let { put("reasoning_effort", it) }
         put("stream_options", buildJsonObject { put("include_usage", true) })
         if (request.tools.isNotEmpty()) {
             put("tools", buildJsonArray {
@@ -121,16 +121,30 @@ class OpenAiProvider(
                     })
                 }
             })
+            // Explicit is safer than implicit: some gateways default tool_choice to "none" and
+            // never emit tool_calls, while OpenAI and SenseNova default to "auto". No regression
+            // on OpenAI.
+            put("tool_choice", "auto")
         }
         put("messages", messages(request.system, request.messages, cacheable(request.model)))
     }.toString()
 
-    /** Chat completions tops out at "high"; the levels above it are clamped rather than rejected. */
-    private fun reasoningEffort(effort: String?): String? = when (effort?.takeIf { it.isNotBlank() }) {
+    /**
+     * Chat completions caps at "high" on OpenAI itself, but SenseNova explicitly supports
+     * "max", and clamping it silently drops the strongest effort tier a user asked for.
+     * Clamp only for known OpenAI-native models; gateways that accept "max" pass it through.
+     */
+    private fun reasoningEffort(effort: String?, model: String): String? = when (effort?.takeIf { it.isNotBlank() }) {
         null -> null
-        LlmEffort.XHIGH, LlmEffort.MAX -> LlmEffort.HIGH
+        LlmEffort.XHIGH -> LlmEffort.HIGH
+        LlmEffort.MAX -> if (isOpenAiNativeModel(model)) LlmEffort.HIGH else LlmEffort.MAX
         else -> effort
     }
+
+    /** Only real OpenAI models reject "max"; every compatible gateway we know of accepts it. */
+    private fun isOpenAiNativeModel(model: String): Boolean =
+        model.startsWith("gpt") || model.startsWith("o1") ||
+            model.startsWith("o3") || model.startsWith("o4") || model.startsWith("chatgpt")
 
     /** Whether to emit explicit cache breakpoints for this model (a gateway fronting an Anthropic model). */
     private fun cacheable(model: String): Boolean =
@@ -199,7 +213,10 @@ class OpenAiProvider(
         put("role", "assistant")
         val text = parts.filterIsInstance<ContentPart.Text>().joinToString("") { it.text }
         val toolUses = parts.filterIsInstance<ContentPart.ToolUse>()
-        if (text.isNotEmpty()) put("content", text)
+        // SenseNova tool-calling returns non-empty content alongside tool_calls; some gateways
+        // reject the message if content is omitted when tool_calls are present.
+        if (toolUses.isNotEmpty() && text.isEmpty()) put("content", "")
+        else if (text.isNotEmpty()) put("content", text)
         if (toolUses.isNotEmpty()) {
             put("tool_calls", buildJsonArray {
                 toolUses.forEach { tu ->
@@ -270,6 +287,11 @@ internal class OpenAiStreamDecoder {
     }
 
     private val calls = LinkedHashMap<Int, Call>()
+    /** Accumulated reasoning (adaptive thinking) text, from `delta.reasoning_content` (OpenAI/DeepSeek/Qwen) or
+     *  `delta.reasoning` (SenseNova). Surfaced as [LlmStreamEvent.ThinkingDelta]s and closed out at the end of the
+     *  stream, so a reasoning model reached through an OpenAI-compatible gateway shows its thinking instead of a
+     *  blank turn. */
+    private val reasoning = StringBuilder()
     private var inputTokens = 0
     private var outputTokens = 0
     private var cacheReadTokens = 0
@@ -296,6 +318,15 @@ internal class OpenAiStreamDecoder {
         val delta = choice["delta"].asObj() ?: return out
         delta["content"].asStr()?.let { if (it.isNotEmpty()) out += LlmStreamEvent.TextDelta(it) }
 
+        // Reasoning models behind an OpenAI-compatible gateway stream their thinking as a sibling of `content`,
+        // not inside it. OpenAI/DeepSeek/Qwen name it `reasoning_content`; SenseNova names it `reasoning`. Without
+        // this branch the whole reasoning phase is silently dropped — and on a tight budget the model can finish
+        // (or hit the cap) before emitting any `content`, so the user sees a completely blank reply.
+        (delta["reasoning_content"].asStr() ?: delta["reasoning"].asStr())?.takeIf { it.isNotEmpty() }?.let {
+            reasoning.append(it)
+            out += LlmStreamEvent.ThinkingDelta(it)
+        }
+
         delta["tool_calls"].asArr()?.forEach { tcElement ->
             val tc = tcElement.asObj() ?: return@forEach
             val index = tc["index"].asInt() ?: 0
@@ -320,6 +351,9 @@ internal class OpenAiStreamDecoder {
         if (completed) return emptyList()
         completed = true
         val out = ArrayList<LlmStreamEvent>()
+        // Close out the reasoning block (if any) so it is kept in the assistant turn — mirroring Anthropic's
+        // `content_block_stop`. The OpenAI Chat Completions dialect never echoes reasoning back, so no signature.
+        if (reasoning.isNotEmpty()) out += LlmStreamEvent.ThinkingCompleted(reasoning.toString(), null)
         calls.values.forEach { c ->
             if (c.id.isNotEmpty()) out += LlmStreamEvent.ToolCallCompleted(c.id, c.name, c.args.toString())
         }
