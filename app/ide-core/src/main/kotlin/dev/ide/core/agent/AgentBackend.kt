@@ -31,6 +31,8 @@ import dev.ide.agent.mcp.CodeAssistMcpServer
 import dev.ide.agent.mcp.FtpServer
 import dev.ide.agent.mcp.HttpMcpServer
 import dev.ide.agent.toolSchema
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import dev.ide.core.BackendContext
 import dev.ide.core.IdeServices
 import dev.ide.platform.log.Log
@@ -259,12 +261,71 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
 
         /** A custom gateway is often a local server (Ollama, LM Studio) that takes no key; its URL is what it needs. */
         val ready: Boolean
-            get() = if (selectedId == GATEWAY) !baseUrl.isNullOrBlank() else keys.isNotEmpty()
+            get() = if (selectedId.startsWith("gateway")) !baseUrl.isNullOrBlank() else keys.isNotEmpty()
+    }
+
+    /** A single custom gateway configuration, stored as JSON alongside the other prefs. */
+    private data class GatewayConfig(
+        val name: String,
+        val baseUrl: String,
+        val model: String,
+        val caCert: String,
+        val key: String,
+        val models: List<UiAgentModel> = emptyList(),
+    )
+
+    private var gatewayIdCounter = AtomicInteger(0)
+
+    /** Read all gateway configs from the `gatewayConfigs` preference (JSON array). */
+    private fun gatewayConfigs(): List<GatewayConfig> {
+        // Backward compat: if old-style single gateway exists but no gatewayConfigs, migrate.
+        val json = pref("gatewayConfigs")
+        if (json != null) {
+            return runCatching {
+                com.google.gson.Gson().fromJson(json, object : TypeToken<List<GatewayConfig>>() {})
+            }.getOrDefault(emptyList())
+        }
+        val legacyUrl = pref("gatewayBaseUrl")
+        if (legacyUrl != null) {
+            val legacy = GatewayConfig(
+                name = "Custom gateway",
+                baseUrl = legacyUrl,
+                model = pref("gatewayModel").orEmpty(),
+                caCert = pref("gatewayCaCert").orEmpty(),
+                key = pref("gatewayKey").orEmpty(),
+            )
+            return listOf(legacy)
+        }
+        return emptyList()
+    }
+
+    /** Persist all gateway configs as a JSON array. */
+    private fun saveGatewayConfigs(configs: List<GatewayConfig>) {
+        val json = com.google.gson.Gson().toJson(configs)
+        ctx.manager?.setPreference("settings.$AI_PAGE.gatewayConfigs", json)
     }
 
     private fun resolveConfig(): ResolvedConfig {
         val selected = pref("provider") ?: registry.providers.firstOrNull()?.id ?: "anthropic"
+        if (selected.startsWith("gateway.")) {
+            val configs = gatewayConfigs()
+            val idx = selected.substringAfterLast('.').toIntOrNull()
+            val gw = if (idx != null && idx < configs.size) configs[idx]
+                else configs.firstOrNull()
+            if (gw != null) {
+                return ResolvedConfig(
+                    selectedId = selected,
+                    clientProviderId = "openai",
+                    apiKey = gw.key.ifBlank { null },
+                    model = gw.model.ifBlank { chosenModel(selected) ?: "" },
+                    baseUrl = gw.baseUrl.ifBlank { null },
+                    caCertificatePem = gw.caCert.ifBlank { null },
+                    backupKeys = backupKeys(selected),
+                )
+            }
+        }
         if (selected == GATEWAY) {
+            // Legacy fallback: single gateway pref
             return ResolvedConfig(
                 selectedId = GATEWAY,
                 clientProviderId = "openai",
@@ -375,22 +436,26 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
                 backupKeys = backupKeys(p.id),
             )
         }
-        // A synthetic "Custom gateway" entry (OpenAI-compatible endpoint); its client is the OpenAI provider.
-        val gateway = UiAgentProvider(
-            GATEWAY, "Custom gateway", emptyList(), "",
-            apiKey = pref("gatewayKey").orEmpty(),
-            backupKeys = backupKeys(GATEWAY),
-        )
+        val gateways = gatewayConfigs().mapIndexed { index, gw ->
+            UiAgentProvider(
+                "gateway.$index", gw.name,
+                gw.models, gw.model,
+                apiKey = gw.key,
+                gatewayBaseUrl = gw.baseUrl,
+                gatewayModel = gw.model,
+                gatewayCaCert = gw.caCert,
+            )
+        }
         val configured = cfg.ready
         return UiAgentConfig(
-            providers = builtins + gateway,
+            providers = builtins + gateways,
             selectedProvider = cfg.selectedId,
             model = cfg.model,
             configured = configured,
             mode = modePref().toUi(),
-            gatewayBaseUrl = pref("gatewayBaseUrl").orEmpty(),
-            gatewayModel = pref("gatewayModel").orEmpty(),
-            gatewayCaCert = pref("gatewayCaCert").orEmpty(),
+            gatewayBaseUrl = cfg.baseUrl.orEmpty(),
+            gatewayModel = cfg.model,
+            gatewayCaCert = cfg.caCertificatePem.orEmpty(),
         )
     }
 
@@ -400,8 +465,16 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
 
     override fun setModel(model: String) {
         val selected = pref("provider") ?: registry.providers.firstOrNull()?.id ?: "anthropic"
-        val field = if (selected == GATEWAY) "gatewayModel" else "model.$selected"
-        ctx.manager?.setPreference("settings.$AI_PAGE.$field", model)
+        if (selected.startsWith("gateway.")) {
+            val configs = gatewayConfigs().toMutableList()
+            val idx = selected.substringAfterLast('.').toIntOrNull() ?: return
+            if (idx < configs.size) {
+                configs[idx] = configs[idx].copy(model = model)
+                saveGatewayConfigs(configs)
+            }
+        } else {
+            ctx.manager?.setPreference("settings.$AI_PAGE.model.$selected", model)
+        }
         resetLoop()
     }
 
@@ -411,7 +484,16 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
     }
 
     override fun setProviderKey(providerId: String, key: String) {
-        ctx.manager?.setPreference("settings.$AI_PAGE.${keyField(providerId)}", key)
+        if (providerId.startsWith("gateway.")) {
+            val configs = gatewayConfigs().toMutableList()
+            val idx = providerId.substringAfterLast('.').toIntOrNull() ?: return
+            if (idx < configs.size) {
+                configs[idx] = configs[idx].copy(key = key)
+                saveGatewayConfigs(configs)
+            }
+        } else {
+            ctx.manager?.setPreference("settings.$AI_PAGE.${keyField(providerId)}", key)
+        }
         resetLoop()
     }
 
@@ -422,10 +504,65 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
     }
 
     override fun setGateway(baseUrl: String, model: String, caCert: String) {
-        ctx.manager?.setPreference("settings.$AI_PAGE.gatewayBaseUrl", baseUrl)
-        ctx.manager?.setPreference("settings.$AI_PAGE.gatewayModel", model)
-        ctx.manager?.setPreference("settings.$AI_PAGE.gatewayCaCert", caCert)
+        val configs = gatewayConfigs().toMutableList()
+        if (configs.isEmpty()) {
+            configs.add(GatewayConfig("Custom gateway", baseUrl, model, caCert, ""))
+        } else {
+            configs[0] = configs[0].copy(baseUrl = baseUrl, model = model, caCert = caCert)
+        }
+        saveGatewayConfigs(configs)
         resetLoop()
+    }
+
+    override fun setGatewayConfig(gatewayId: String, baseUrl: String, model: String, caCert: String) {
+        val configs = gatewayConfigs().toMutableList()
+        val idx = gatewayId.substringAfterLast('.').toIntOrNull() ?: return
+        if (idx < configs.size) {
+            configs[idx] = configs[idx].copy(baseUrl = baseUrl, model = model, caCert = caCert)
+            saveGatewayConfigs(configs)
+        }
+        resetLoop()
+    }
+
+    override fun addGateway(): String {
+        val configs = gatewayConfigs().toMutableList()
+        val newIndex = configs.size
+        configs.add(GatewayConfig("Custom gateway ${newIndex + 1}", "", "", "", ""))
+        saveGatewayConfigs(configs)
+        resetLoop()
+        return "gateway.$newIndex"
+    }
+
+    override fun deleteGateway(gatewayId: String) {
+        val configs = gatewayConfigs().toMutableList()
+        val idx = gatewayId.substringAfterLast('.').toIntOrNull() ?: return
+        if (idx < configs.size) {
+            configs.removeAt(idx)
+            saveGatewayConfigs(configs)
+            val selected = pref("provider")
+            if (selected == gatewayId) {
+                val newSelected = if (configs.isNotEmpty()) "gateway.0" else (registry.providers.firstOrNull()?.id ?: "anthropic")
+                ctx.manager?.setPreference("settings.$AI_PAGE.provider", newSelected)
+            }
+            resetLoop()
+        }
+    }
+
+    override fun refreshGatewayModels(gatewayId: String) {
+        val configs = gatewayConfigs()
+        val idx = gatewayId.substringAfterLast('.').toIntOrNull() ?: return
+        if (idx >= configs.size) return
+        val gw = configs[idx]
+        val provider = registry.provider("openai") ?: return
+        scope.launch {
+            val fetched = runCatching { provider.listModels(ProviderConfig(gw.key, gw.baseUrl, gw.caCert)) }
+                .getOrDefault(provider.models)
+            val usable = fetched.filter { it.id !in missingModels }.ifEmpty { fetched }
+            val updated = gw.copy(models = usable.map { UiAgentModel(it.id, it.displayName) })
+            val updatedConfigs = configs.toMutableList()
+            updatedConfigs[idx] = updated
+            saveGatewayConfigs(updatedConfigs)
+        }
     }
 
     override fun refreshModels() {
@@ -439,7 +576,7 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
         scope.launch {
             val fetched = runCatching { provider.listModels(ProviderConfig(key, cfg.baseUrl, cfg.caCertificatePem)) }
                 .getOrDefault(provider.models)
-            gatewayModelsLive = cfg.selectedId == GATEWAY && fetched !== provider.models
+            gatewayModelsLive = cfg.selectedId.startsWith("gateway") && fetched !== provider.models
             val usable = fetched.filter { it.id !in missingModels }.ifEmpty { fetched }
             rememberPreferred(cfg.selectedId, provider, usable)
             _models.value = usable.map { UiAgentModel(it.id, it.displayName) }
