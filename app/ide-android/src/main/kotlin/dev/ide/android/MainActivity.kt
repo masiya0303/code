@@ -27,19 +27,13 @@ import dev.ide.ui.ext.AppKeys
 import dev.ide.ui.ext.PreviewSnapshots
 import dev.ide.android.preview.SurfaceComposer
 import dev.ide.ui.backend.FileActions
+import dev.ide.ui.backend.AdHost
 import dev.ide.ui.backend.IdeBackend
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-
-/**
- * How long after the engine comes up the Ads SDK starts. Long enough to clear the launch work that matters
- * (the first composition, the project reopen and the editor's first frames), short enough that an ad slot on
- * the first screen fills while the user is still on it.
- */
-private const val ADS_STARTUP_DELAY_MS = 5_000L
 
 /**
  * The Android host. Bootstraps the real on-device engine ([AndroidIde]) off the main thread, then renders the
@@ -58,8 +52,8 @@ class MainActivity : ComponentActivity() {
     /** Android file/SAF/FileProvider plumbing (byte-level import / share / export / install / reveal). */
     private val fileOps by lazy { AndroidFileOps(this) }
 
-    /** UMP consent flow (gathers ad consent before AdMob init; drives the "Manage ad consent" Settings entry). */
-    private val adConsent by lazy { AdConsentManager(this) }
+    // AdConsentManager removed
+
 
     /**
      * A store sign-in redirect that arrived before the engine finished booting.
@@ -78,8 +72,6 @@ class MainActivity : ComponentActivity() {
      */
     private val storeLink = mutableStateOf<String?>(null)
 
-    /** Whether the UMP consent flow has settled (success or failure). Ads wait for it, see [ADS_STARTUP_DELAY_MS]. */
-    private val adConsentResolved = mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // Edge-to-edge with default (auto) bar styles; the system-bar ICON appearance is then driven reactively
@@ -93,7 +85,7 @@ class MainActivity : ComponentActivity() {
         // Gather UMP consent BEFORE initializing the Ads SDK (mediation + EEA/UK requirement). Failure resolves
         // too, so a consent hiccup never blocks the IDE. The SDK itself starts later, once launch has settled
         // (see the LaunchedEffect below the ad host).
-        adConsent.gather(this) { adConsentResolved.value = true }
+        // AdMob consent gathering removed
 
         setContent {
             var backend by remember { mutableStateOf<IdeBackend?>(null) }
@@ -245,33 +237,9 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            // Android advertising bridge (native ads via AdMob + mediation). The consent hooks drive the
-            // Settings "Manage ad consent" entry (UMP privacy options) and reopen the form on request.
-            val adHost = remember {
-                AndroidAdHost(
-                    privacyOptionsRequiredProvider = { adConsent.privacyOptionsRequired },
-                    onShowPrivacyOptions = { adConsent.showPrivacyOptions(this@MainActivity) },
-                    // The full-screen build interstitial needs the foreground Activity to show().
-                    activityProvider = { this@MainActivity },
-                    // `lastUpdateTime` changes on a fresh install and on every update, and is identical across
-                    // launches in between — the shared AdController turns ads back on once per new value.
-                    installStamp = runCatching {
-                        packageManager.getPackageInfo(packageName, 0).lastUpdateTime.toString()
-                    }.getOrNull(),
-                )
-            }
-            // Pooled native ads hold this Activity's context; destroy them with it.
-            DisposableEffect(adHost) { onDispose { adHost.close() } }
-            // Start the Ads SDK only after the engine is up and launch has had time to settle. Initializing it
-            // and loading the first ad stand up a WebView and run SDK work on the main thread, about a second of
-            // dropped frames that used to land exactly while the project was opening. Slots shown before this
-            // wait (see AndroidAdHost.start); one that is gone by then never requests.
-            val engineUp = backend != null
-            LaunchedEffect(engineUp, adConsentResolved.value) {
-                if (!engineUp || !adConsentResolved.value) return@LaunchedEffect
-                delay(ADS_STARTUP_DELAY_MS)
-                if (adConsent.canRequestAds) initAds(applicationContext)
-                adHost.start()
+            // Ads removed: the app no longer initializes AdMob or renders native/interstitial ads.
+            val adHost = AdHost.None
+
             }
 
             // A `.caproj` package handed in via "Open with" opens the import preview (see the branch below); any
