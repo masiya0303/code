@@ -654,10 +654,6 @@ private fun AppRoute(
 @Composable
 private fun HomeRoute(app: CodeAssistAppState, fileActions: FileActions) {
     val projects = remember(app.epoch, app.projectsRefresh) { app.backend.projects.projects() }
-    if (!app.storeEnabled) {
-        ProjectPickerRoute(app, fileActions, projects)
-        return
-    }
     // The wide home's sidebar reaches the inbox and the account sheet from every tab. Account lives on the
     // Projects tab, so its entry switches there and asks that tab to open the sheet.
     var notificationsVisible by remember { mutableStateOf(false) }
@@ -672,9 +668,13 @@ private fun HomeRoute(app: CodeAssistAppState, fileActions: FileActions) {
                 onAccountRequestHandled = { accountRequested = false },
             )
         },
-        storeContent = { StoreRoute(app, fileActions) },
-        learnContent = { LearnRoute(app, fileActions) },
-        challengesContent = { ChallengeRoute(app, fileActions) },
+        settingsContent = {
+            SettingsHubScreen(
+                sections = rememberHubSections(app, state),
+                onBack = { app.selectHomeTab(HomeTab.Projects) },
+                onOpen = { openHubTarget(app, it) },
+            )
+        },
         projectCount = projects.size,
         sidebarFooter = {
             val unread by app.backend.notifications.unreadCount().collectAsState()

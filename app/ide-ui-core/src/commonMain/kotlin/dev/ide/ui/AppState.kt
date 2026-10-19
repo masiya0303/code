@@ -58,9 +58,9 @@ enum class Screen { Projects, CreateProject, ImportProject, ExportProject, Edito
 
 /**
  * The home screen's bottom-navigation destinations (the landing surface shown on [Screen.Projects]): the
- * project picker, the Projects Store (browse/install templates + samples), and Learn (docs + tutorials).
+ * project picker and the Settings hub.
  */
-enum class HomeTab { Projects, Store, Learn, Challenges }
+enum class HomeTab { Projects, Settings }
 
 /**
  * The phone bottom-nav slots (the compact counterpart to the desktop activity rail). Each maps to opening a

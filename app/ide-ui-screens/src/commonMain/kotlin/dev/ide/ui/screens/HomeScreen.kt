@@ -74,17 +74,13 @@ fun HomeScreen(
     tab: HomeTab,
     onSelectTab: (HomeTab) -> Unit,
     projectsContent: @Composable () -> Unit,
-    storeContent: @Composable () -> Unit,
-    learnContent: @Composable () -> Unit,
-    challengesContent: @Composable () -> Unit,
+    settingsContent: @Composable () -> Unit,
     projectCount: Int? = null,
     sidebarFooter: (@Composable ColumnScope.() -> Unit)? = null,
 ) {
     val destinations = listOf(
         NavDestination(HomeTab.Projects.name, stringResource(Res.string.projects), CaSymbols.folderOpen),
-        NavDestination(HomeTab.Store.name, stringResource(Res.string.home_store), CaSymbols.travelExplore),
-        NavDestination(HomeTab.Learn.name, stringResource(Res.string.home_learn), CaSymbols.school),
-        NavDestination(HomeTab.Challenges.name, stringResource(Res.string.home_challenges), CaSymbols.bolt),
+        NavDestination(HomeTab.Settings.name, stringResource(Res.string.settings_title), CaSymbols.settings),
     )
     // Matched against the entries rather than `valueOf`, which THROWS on an id that is not a tab name. The
     // navigation speaks in strings, so any id that does not round-trip (a destination another build
@@ -101,9 +97,7 @@ fun HomeScreen(
             Box(Modifier.fillMaxSize()) {
                 when (t) {
                     HomeTab.Projects -> projectsContent()
-                    HomeTab.Store -> storeContent()
-                    HomeTab.Learn -> learnContent()
-                    HomeTab.Challenges -> challengesContent()
+                    HomeTab.Settings -> settingsContent()
                 }
             }
         }

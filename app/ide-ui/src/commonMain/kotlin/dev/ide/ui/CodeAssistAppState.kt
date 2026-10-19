@@ -326,7 +326,9 @@ class CodeAssistAppState(
     /** Whether the system back gesture has somewhere in-app to go. False on the picker landing, where back
      *  exits the app as usual. */
     val canNavigateBack: Boolean
-        get() = screen != Screen.Projects || homeTab != HomeTab.Projects || showOnboarding || showMigration ||
+        get() = screen != Screen.Projects ||
+            homeTab !in listOf(HomeTab.Projects, HomeTab.Settings) ||
+            showOnboarding || showMigration ||
             showAnalytics
 
     // Session resume across a process kill: the project that was on screen last run (captured up-front, before
@@ -766,7 +768,7 @@ class CodeAssistAppState(
     fun exitChallenge() {
         challengeEpoch++
         screen = Screen.Projects
-        homeTab = HomeTab.Challenges
+        homeTab = HomeTab.Settings
     }
 
     fun openChallengeBoard(date: String = "") {
@@ -776,7 +778,7 @@ class CodeAssistAppState(
 
     fun exitChallengeBoard() {
         screen = Screen.Projects
-        homeTab = HomeTab.Challenges
+        homeTab = HomeTab.Settings
     }
 
     /** Re-reads the Challenges tab, after a sign-in or a pull to refresh. */
@@ -881,16 +883,16 @@ class CodeAssistAppState(
      * ignoring the tap.
      */
     fun openStoreItemById(id: String) {
-        if (id.isBlank()) return showStore()
+        if (id.isBlank()) return showSettings()
         scope.launch {
             val item = findStoreItem(id)
-            if (item != null) openStoreItem(item) else showStore()
+            if (item != null) openStoreItem(item) else showSettings()
         }
     }
 
-    /** The Store tab of the home screen, from wherever the app currently is. */
-    fun showStore() {
-        selectHomeTab(HomeTab.Store)
+    /** The Settings tab of the home screen, from wherever the app currently is. */
+    fun showSettings() {
+        selectHomeTab(HomeTab.Settings)
         screen = Screen.Projects
     }
 
@@ -1082,8 +1084,8 @@ class CodeAssistAppState(
             screen == Screen.ImportProject -> cancelImportPreview()
             screen == Screen.ExportProject -> finishExport()
             screen == Screen.Editor -> confirmCloseProject = true
-            // On the home screen, a Store/Learn tab steps back to the project picker before exiting.
-            screen == Screen.Projects && homeTab != HomeTab.Projects -> homeTab = HomeTab.Projects
+            // On the home screen, Settings steps back to the project picker before exiting.
+            screen == Screen.Projects && homeTab == HomeTab.Settings -> homeTab = HomeTab.Projects
             else -> {}
         }
     }
