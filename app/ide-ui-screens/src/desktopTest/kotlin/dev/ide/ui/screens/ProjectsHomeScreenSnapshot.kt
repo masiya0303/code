@@ -105,9 +105,7 @@ class ProjectsHomeScreenSnapshot {
                                     showLegacyRecovery = legacyRecovery,
                                 )
                             },
-                            storeContent = {},
-                            learnContent = {},
-                            challengesContent = {},
+                            settingsContent = {},
                             projectCount = projects.size,
                             sidebarFooter = {
                                 HomeSidebarItem(dev.ide.ui.icons.CaSymbols.inbox, "Notifications", count = 3, countIsAlert = true) {}

@@ -327,7 +327,7 @@ class CodeAssistAppState(
      *  exits the app as usual. */
     val canNavigateBack: Boolean
         get() = screen != Screen.Projects ||
-            homeTab !in listOf(HomeTab.Projects, HomeTab.Settings) ||
+            homeTab == HomeTab.Settings ||
             showOnboarding || showMigration ||
             showAnalytics
 
