@@ -227,7 +227,7 @@ private fun SettingsRoute(
             }
         },
         view = if (app.hubReturn == Screen.Editor) SettingsView.All else SettingsView.Global,
-        title = stringResource(settings_title),
+        title = stringResource(Res.string.settings_title),
         codeFont = codeFont,
         fileActions = fileActions,
         pageId = pageId,

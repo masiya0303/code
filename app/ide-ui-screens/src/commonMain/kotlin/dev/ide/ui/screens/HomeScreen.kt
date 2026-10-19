@@ -78,7 +78,7 @@ fun HomeScreen(
 ) {
     val destinations = listOf(
         NavDestination(HomeTab.Projects.name, stringResource(Res.string.projects), CaSymbols.folderOpen),
-        NavDestination(HomeTab.Settings.name, stringResource(settings_title), CaSymbols.settings),
+        NavDestination(HomeTab.Settings.name, stringResource(Res.string.settings_title), CaSymbols.settings),
     )
     // Matched against the entries rather than `valueOf`, which THROWS on an id that is not a tab name. The
     // navigation speaks in strings, so any id that does not round-trip (a destination another build
