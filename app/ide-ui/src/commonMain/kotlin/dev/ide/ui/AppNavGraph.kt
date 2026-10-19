@@ -227,7 +227,7 @@ private fun SettingsRoute(
             }
         },
         view = if (app.hubReturn == Screen.Editor) SettingsView.All else SettingsView.Global,
-        title = stringResource(settings_title),
+        title = stringResource(Res.string.settings_title),
         codeFont = codeFont,
         fileActions = fileActions,
         pageId = pageId,
@@ -247,7 +247,7 @@ private fun AppRoute(
 ) {
     val backend = app.backend
     when (s) {
-        Screen.Projects -> HomeRoute(app, fileActions)
+        Screen.Projects -> HomeRoute(app, state, fileActions)
 
         Screen.CreateProject -> CreateProjectScreen(
             backend = backend,
@@ -652,7 +652,7 @@ private fun AppRoute(
  * one tab of [HomeScreen] alongside the store and Learn.
  */
 @Composable
-private fun HomeRoute(app: CodeAssistAppState, fileActions: FileActions) {
+private fun HomeRoute(app: CodeAssistAppState, state: IdeUiState, fileActions: FileActions) {
     val projects = remember(app.epoch, app.projectsRefresh) { app.backend.projects.projects() }
     // The wide home's sidebar reaches the inbox and the account sheet from every tab. Account lives on the
     // Projects tab, so its entry switches there and asks that tab to open the sheet.
@@ -668,13 +668,7 @@ private fun HomeRoute(app: CodeAssistAppState, fileActions: FileActions) {
                 onAccountRequestHandled = { accountRequested = false },
             )
         },
-        settingsContent = {
-            SettingsHubScreen(
-                sections = rememberHubSections(app, state),
-                onBack = { app.selectHomeTab(HomeTab.Projects) },
-                onOpen = { openHubTarget(app, it) },
-            )
-        },
+        settingsContent = { SettingsTabContent(app, state) },
         projectCount = projects.size,
         sidebarFooter = {
             val unread by app.backend.notifications.unreadCount().collectAsState()
@@ -705,6 +699,15 @@ private fun HomeRoute(app: CodeAssistAppState, fileActions: FileActions) {
             },
         )
     }
+}
+
+@Composable
+private fun SettingsTabContent(app: CodeAssistAppState, state: IdeUiState) {
+    SettingsHubScreen(
+        sections = rememberHubSections(app, state),
+        onBack = { app.selectHomeTab(HomeTab.Projects) },
+        onOpen = { openHubTarget(app, it) },
+    )
 }
 
 @Composable
